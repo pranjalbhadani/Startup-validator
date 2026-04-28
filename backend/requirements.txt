@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+streamlit
+pydantic
+python-dotenv
+google-genai
+requests
+chromadb
+pandas
+plotly
