@@ -34,9 +34,9 @@ npm install
 
 1. Navigate to the `backend/` folder.
 2. Rename `.env.example` to `.env`.
-3. Open `.env` and add your `GOOGLE_API_KEY`:
+3. Open `.env` and add your `GEMINI_API_KEY`:
    ```text
-   GOOGLE_API_KEY=your_key_here
+   GEMINI_API_KEY=your_key_here
    ```
 
 ---
@@ -67,7 +67,7 @@ npm run dev
 If you want to test the multi-agent logic without the UI, you can run:
 ```powershell
 cd backend
-python pipeline.py
+python -c "from langgraph_pipeline import run_pipeline; run_pipeline('An AI tool for automated video summarization')"
 ```
 
 ---
