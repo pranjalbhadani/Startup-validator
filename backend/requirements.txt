@@ -8,3 +8,4 @@ requests
 chromadb
 pandas
 plotly
+langgraph

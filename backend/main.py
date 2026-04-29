@@ -6,7 +6,7 @@ Exposes the /validate endpoint that runs the multi-agent pipeline.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from models import StartupInput
-from pipeline import run_pipeline
+from langgraph_pipeline import run_pipeline
 
 # Initialize the FastAPI application
 app = FastAPI(
