@@ -1,44 +1,55 @@
 """
-Agent 3: Competitor Similarity Agent
+Agent 2: Competitor Similarity Agent
 Searches a local ChromaDB vector database (built from cleaned CSV data)
 to find similar startups. Returns a list of competitors and a competition_score.
 """
 
 import os
+import sys
 import pandas as pd
 import chromadb
 from chromadb.utils import embedding_functions
 
-# ─── Paths (relative to this file → MVP/agents/) ───
+# ─── Paths (relative to this file → backend/agents/) ───
 AGENT_DIR = os.path.dirname(os.path.abspath(__file__))
-MVP_DIR = os.path.join(AGENT_DIR, "..")
-DB_PATH = os.path.join(MVP_DIR, "startup_vectordb")
+BACKEND_DIR = os.path.join(AGENT_DIR, "..")
+PROJECT_ROOT = os.path.abspath(os.path.join(BACKEND_DIR, ".."))
+
+# Store the VectorDB inside the data/ directory
+DB_PATH = os.path.join(PROJECT_ROOT, "data", "startup_vectordb")
 
 # Path to the CLEANED CSV (output of utilities/data_cleaning.py)
 CLEANED_CSV_PATH = os.path.join(
-    MVP_DIR, "..", "data", "datasets", "cleaned_investments_sent.csv"
+    PROJECT_ROOT, "data", "processed", "cleaned_investments_sent.csv"
 )
 
-# Initialize the local ChromaDB vector database
-chroma_client = chromadb.PersistentClient(path=DB_PATH)
-sentence_transformer_ef = embedding_functions.DefaultEmbeddingFunction()
 
-# Create or open the database collection
-collection = chroma_client.get_or_create_collection(
-    name="crunchbase_startups", embedding_function=sentence_transformer_ef
-)
+def _get_collection():
+    """
+    Create or retrieve the ChromaDB collection.
+    Wrapped in a function to avoid hanging on import if the DB
+    directory doesn't exist yet.
+    """
+    os.makedirs(DB_PATH, exist_ok=True)
+    chroma_client = chromadb.PersistentClient(path=DB_PATH)
+    sentence_transformer_ef = embedding_functions.DefaultEmbeddingFunction()
+    collection = chroma_client.get_or_create_collection(
+        name="crunchbase_startups", embedding_function=sentence_transformer_ef
+    )
+    return collection
 
 
 def load_csv_to_database(csv_file_path: str = None):
     """
     Load the cleaned CSV into ChromaDB vector database.
-    Uses the cleaned CSV by default (from data/datasets/cleaned_investments.csv).
+    Uses the cleaned CSV by default (from data/processed/cleaned_investments_sent.csv).
     Run this ONCE to populate the database.
     """
     if csv_file_path is None:
         csv_file_path = CLEANED_CSV_PATH
 
-    print(f"[Competitor Agent] Loading cleaned CSV from: {csv_file_path}")
+    print(f"[Competitor Agent] DB_PATH:  {DB_PATH}")
+    print(f"[Competitor Agent] CSV_PATH: {csv_file_path}")
 
     if not os.path.exists(csv_file_path):
         print(f"[Competitor Agent] ERROR: CSV not found at {csv_file_path}")
@@ -54,6 +65,18 @@ def load_csv_to_database(csv_file_path: str = None):
     df = df.dropna(subset=["name", "market", "status"])
 
     print(f"[Competitor Agent] Loaded {len(df)} startups from cleaned dataset.")
+
+    collection = _get_collection()
+
+    # Check if data is already fully loaded
+    existing_count = collection.count()
+    if existing_count >= len(df) * 0.9:
+        print(f"[Competitor Agent] Database already contains {existing_count} records (CSV has {len(df)}).")
+        print("[Competitor Agent] Skipping load. Delete data/startup_vectordb/ to reload.")
+        return
+    elif existing_count > 0:
+        print(f"[Competitor Agent] Partial load detected: {existing_count} of {len(df)} records.")
+        print("[Competitor Agent] Resuming load using upsert...")
 
     # Create rich searchable documents combining name, market, and funding info
     documents = []
@@ -79,21 +102,33 @@ def load_csv_to_database(csv_file_path: str = None):
         metadatas.append(
             {"name": name, "status": status, "market": market, "funding": str(funding)}
         )
-        ids.append(str(idx))
+        ids.append(f"startup_{idx}")
 
-    batch_size = 5000
+    # Use smaller batches to avoid memory issues with embedding generation
+    batch_size = 500
     total_added = 0
+    total_batches = (len(documents) + batch_size - 1) // batch_size
+
+    print(f"[Competitor Agent] Starting embedding + insertion ({total_batches} batches of {batch_size})...")
+    sys.stdout.flush()
 
     for i in range(0, len(documents), batch_size):
         batch_docs = documents[i : i + batch_size]
         batch_meta = metadatas[i : i + batch_size]
         batch_ids = ids[i : i + batch_size]
 
-        collection.add(documents=batch_docs, metadatas=batch_meta, ids=batch_ids)
-        total_added += len(batch_docs)
-        print(
-            f"[Competitor Agent] Added batch {i // batch_size + 1}: {total_added}/{len(documents)} startups"
-        )
+        try:
+            collection.upsert(documents=batch_docs, metadatas=batch_meta, ids=batch_ids)
+            total_added += len(batch_docs)
+            batch_num = i // batch_size + 1
+            print(
+                f"[Competitor Agent] Batch {batch_num}/{total_batches}: "
+                f"{total_added}/{len(documents)} startups added"
+            )
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"[Competitor Agent] ERROR on batch {i // batch_size + 1}: {e}")
+            sys.stdout.flush()
 
     print(
         f"[Competitor Agent] Successfully loaded {total_added} startups into the Vector Database!"
@@ -109,7 +144,9 @@ def find_competitors(idea_data: dict, n_results: int = 5) -> dict:
       - competitors: list of matching startups with details
       - competition_score: 0-10 based on similarity and status of matches
     """
-    print("[Agent 3 - Competitor Agent] Searching local database...")
+    print("[Agent 2 - Competitor Agent] Searching local database...")
+
+    collection = _get_collection()
 
     # Build a rich search query from the idea data
     industry = idea_data.get("industry", "").strip()
@@ -127,9 +164,9 @@ def find_competitors(idea_data: dict, n_results: int = 5) -> dict:
     # Check if the collection has any data
     count = collection.count()
     if count == 0:
-        print("[Agent 3 - Competitor Agent] WARNING: Database is empty!")
+        print("[Agent 2 - Competitor Agent] WARNING: Database is empty!")
         print(
-            "[Agent 3 - Competitor Agent] Run 'python agents/competitor_agent.py' to load data."
+            "[Agent 2 - Competitor Agent] Run 'python -c \"from backend.agents.competitor_agent import load_csv_to_database; load_csv_to_database()\"' to load data."
         )
         return {"competitors": [], "competition_score": 0}
 
@@ -182,7 +219,7 @@ def find_competitors(idea_data: dict, n_results: int = 5) -> dict:
         competition_score = 0
 
     print(
-        f"[Agent 3 - Competitor Agent] Found {len(competitors)} competitors. "
+        f"[Agent 2 - Competitor Agent] Found {len(competitors)} competitors. "
         f"Competition Score: {competition_score}/10"
     )
 
@@ -193,6 +230,9 @@ if __name__ == "__main__":
     # ─── Standalone: Load cleaned CSV and run a test search ───
     print("=" * 60)
     print("COMPETITOR AGENT - DATABASE SETUP & TEST")
+    print(f"  PROJECT_ROOT: {PROJECT_ROOT}")
+    print(f"  DB_PATH:      {DB_PATH}")
+    print(f"  CSV_PATH:     {CLEANED_CSV_PATH}")
     print("=" * 60)
 
     # Load the cleaned dataset into ChromaDB
