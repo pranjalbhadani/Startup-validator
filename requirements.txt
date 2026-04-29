@@ -3,5 +3,9 @@ uvicorn
 streamlit
 pydantic
 python-dotenv
-google-generativeai
+google-genai
 requests
+chromadb
+pandas
+plotly
+langgraph

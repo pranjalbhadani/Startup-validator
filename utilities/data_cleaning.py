@@ -10,8 +10,8 @@ import pandas as pd
 # ─── Paths ───
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.join(SCRIPT_DIR, "..")
-RAW_CSV = os.path.join(PROJECT_ROOT, "data", "datasets", "investments_VC_dataset.csv")
-CLEAN_CSV = os.path.join(PROJECT_ROOT, "data", "datasets", "cleaned_investments.csv")
+RAW_CSV = os.path.join(PROJECT_ROOT, "data", "raw", "kaggle", "investments_VC_dataset.csv")
+CLEAN_CSV = os.path.join(PROJECT_ROOT, "data", "processed", "cleaned_investments_sent.csv")
 
 # 1. Load the raw data
 print(f"Loading raw data from: {RAW_CSV}")
