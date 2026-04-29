@@ -54,4 +54,7 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
-*.swo
+*.swo
+
+#prompts
+prompts/
