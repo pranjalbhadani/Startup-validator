@@ -23,6 +23,14 @@ export interface CompetitorInfo {
   market: string;
   status: string;
   similarity_distance: number;
+  funding?: string;
+  // Enriched fields from unified data
+  source?: string;
+  country?: string;
+  valuation?: number;
+  investors?: string;
+  year_founded?: string;
+  outcome?: string;
 }
 
 /**
@@ -34,8 +42,22 @@ export interface ValidationResponse {
   target_market: string;
   core_proposition: string;
   revenue_model: string;
+  keywords?: string[];
   competition_score: number;
   competitors: CompetitorInfo[];
+  feasibility_score?: number;
+  risk_level?: string;
+  market_score?: number;
+  market_reasoning?: string;
+  risk_reasoning?: string;
+  overall_validation_score?: number;
+  scoring_report?: Record<string, unknown>;
+  // Enriched fields
+  trend_score?: number;
+  trend_assessment?: string;
+  unicorn_potential?: string;
+  data_sources_used?: string[];
+  macro_context?: Record<string, unknown>;
 }
 
 /**

@@ -28,12 +28,21 @@ def calculate_overall(
     return round(overall, 2)
 
 
-def evaluate_competitors(competitors: list[dict]) -> dict:
+def evaluate_competitors(
+    competitors: list[dict],
+    keywords: list[str] = None,
+    trend_data: list[dict] = None,
+    macro_context: dict = None,
+) -> dict:
     """
     Run the Agent 3 scoring engine against a list of competitor startups.
 
     This is the primary integration point used by the pipeline.
-    Accepts the competitor list from Agent 2 and returns the full
-    scoring report (score, risk, metrics, insights, recommendations).
+    Now supports enriched scoring with trend data and macro context.
     """
-    return score_startups(competitors)
+    return score_startups(
+        competitors,
+        keywords=keywords,
+        trend_data=trend_data,
+        macro_context=macro_context,
+    )

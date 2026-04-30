@@ -45,13 +45,14 @@ export function ResultsPage() {
     );
   }
 
-  // Derive display values from the real API result
+  // Use actual backend values instead of deriving them client-side
   const competitionScore = result.competition_score ?? 0;
-  const overallScore = Math.max(0, Math.min(10, 10 - competitionScore * 0.5)); // simple derived score
-  const riskLevel =
-    competitionScore >= 7 ? 'High' : competitionScore >= 4 ? 'Medium' : 'Low';
+  const feasibilityScore = result.feasibility_score ?? 0;
+  const marketScore = result.market_score ?? 0;
+  const overallScore = result.overall_validation_score ?? Math.max(0, Math.min(10, 10 - competitionScore * 0.5));
+  const riskLevel = result.risk_level ?? (competitionScore >= 7 ? 'High' : competitionScore >= 4 ? 'Medium' : 'Low');
   const riskColor =
-    competitionScore >= 7 ? '#AE0E31' : competitionScore >= 4 ? '#F5A406' : '#648C9C';
+    riskLevel === 'High' ? '#AE0E31' : riskLevel === 'Medium' ? '#F5A406' : '#648C9C';
 
   const handleCopyResults = () => {
     const text = `Startup: ${result.startup_name}
@@ -60,6 +61,10 @@ Target Market: ${result.target_market}
 Core Proposition: ${result.core_proposition}
 Revenue Model: ${result.revenue_model}
 Competition Score: ${competitionScore}/10
+Feasibility Score: ${feasibilityScore}/100
+Market Score: ${marketScore}/10
+Overall Score: ${overallScore}/10
+Risk Level: ${riskLevel}
 Competitors Found: ${result.competitors.length}
 ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.status}, similarity: ${((1 / (1 + c.similarity_distance)) * 100).toFixed(0)}%)`).join('\n')}`;
     navigator.clipboard.writeText(text);
@@ -162,7 +167,7 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
       </div>
 
       {/* Score Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
         <ScoreCard
           title="Competition Level"
           score={competitionScore}
@@ -171,14 +176,21 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
           color="cyan"
         />
         <ScoreCard
-          title="Competitors Found"
-          score={result.competitors.length}
-          maxScore={20}
+          title="Market Score"
+          score={marketScore}
+          maxScore={10}
           icon={TrendingUp}
           color="yellow"
         />
         <ScoreCard
-          title="Derived Score"
+          title="Feasibility"
+          score={parseFloat((feasibilityScore / 10).toFixed(1))}
+          maxScore={10}
+          icon={CheckCircle}
+          color="green"
+        />
+        <ScoreCard
+          title="Overall Score"
           score={parseFloat(overallScore.toFixed(1))}
           maxScore={10}
           icon={BarChart3}
@@ -205,6 +217,9 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
                       Status
                     </th>
                     <th className="px-6 py-4 text-left text-sm font-medium" style={{ color: '#443646' }}>
+                      Source
+                    </th>
+                    <th className="px-6 py-4 text-left text-sm font-medium" style={{ color: '#443646' }}>
                       Similarity
                     </th>
                   </tr>
@@ -229,6 +244,10 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
             <DetailCard label="Industry Detected" value={result.industry_detected} />
             <DetailCard label="Target Market" value={result.target_market} />
             <DetailCard label="Revenue Model" value={result.revenue_model} />
+            <DetailCard label="Risk Level" value={riskLevel} />
+            <DetailCard label="Trend Assessment" value={result.trend_assessment || '—'} />
+            <DetailCard label="Unicorn Potential" value={result.unicorn_potential || '—'} />
+            <DetailCard label="Data Sources" value={(result.data_sources_used || []).join(', ') || '—'} />
           </div>
           <div className="mt-6 p-4 rounded-xl" style={{ backgroundColor: '#F5F7FA' }}>
             <h4 className="text-sm font-medium mb-2" style={{ color: '#023155' }}>
@@ -236,6 +255,22 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
             </h4>
             <p className="text-sm" style={{ color: '#443646' }}>{result.core_proposition}</p>
           </div>
+          {result.market_reasoning && (
+            <div className="mt-4 p-4 rounded-xl" style={{ backgroundColor: '#0489A71A' }}>
+              <h4 className="text-sm font-medium mb-2" style={{ color: '#023155' }}>
+                Market Assessment
+              </h4>
+              <p className="text-sm" style={{ color: '#443646' }}>{result.market_reasoning}</p>
+            </div>
+          )}
+          {result.risk_reasoning && (
+            <div className="mt-4 p-4 rounded-xl" style={{ backgroundColor: '#F5A4061A' }}>
+              <h4 className="text-sm font-medium mb-2" style={{ color: '#023155' }}>
+                Recommendations
+              </h4>
+              <p className="text-sm" style={{ color: '#443646' }}>{result.risk_reasoning}</p>
+            </div>
+          )}
         </div>
       </div>
 
@@ -257,7 +292,7 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
         {showReasoning && (
           <div className="px-6 pb-6 space-y-4" style={{ color: '#443646' }}>
             <p>
-              Our multi-agent AI pipeline analyzed your startup idea through two stages:
+              Our multi-agent AI pipeline analyzed your startup idea through multiple stages:
             </p>
             <ul className="list-disc list-inside space-y-2 ml-4">
               <li>
@@ -265,17 +300,25 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
                 core proposition, and revenue model using the Gemini LLM.
               </li>
               <li>
-                <strong>Stage 2 — Competitor Similarity Agent:</strong> Searched a vector database of
-                startup data using ChromaDB to find the most similar startups and calculate the
-                competition score.
+                <strong>Stage 2 — Retrieval Agent:</strong> Searched a unified vector database of
+                startup data across multiple sources (Crunchbase, YC, Unicorns, Indian Funding, Product Hunt)
+                using ChromaDB.
+              </li>
+              <li>
+                <strong>Stage 3 — Scoring Engine:</strong> Computed feasibility, competition,
+                market demand, trend analysis, and risk scores using weighted metrics.
               </li>
             </ul>
             <p>
               The competition score ({competitionScore}/10) reflects how crowded the market is based on
               the number and similarity of existing startups. A higher score indicates more competition.
             </p>
+            <p>
+              Feasibility score ({feasibilityScore}/100) is a weighted composite of survival rate,
+              competition, demand, funding, trend signals, and unicorn proximity.
+            </p>
             <p className="text-sm italic" style={{ color: '#648C9C' }}>
-              Data sources: Proprietary startup vector database, Gemini AI analysis
+              Data sources: {(result.data_sources_used || []).join(', ') || 'Proprietary startup vector database, Gemini AI analysis'}
             </p>
           </div>
         )}
@@ -287,18 +330,24 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
 function CompetitorRow({ competitor }: { competitor: CompetitorInfo }) {
   // ChromaDB returns L2 distance (0 = identical, higher = less similar)
   // Convert to a 0-1 similarity score using inverse distance
-  const similarity = 1 / (1 + competitor.similarity_distance);
+  const distance = competitor.similarity_distance ?? 1;
+  const similarity = 1 / (1 + distance);
   const normalizedSimilarity = Math.max(0, Math.min(1, similarity));
 
-  const statusLower = competitor.status.toLowerCase();
+  const statusLower = (competitor.status || 'unknown').toLowerCase();
   const statusColor =
     statusLower.includes('operating') || statusLower.includes('active')
       ? { bg: '#648C9C1A', text: '#648C9C' }
       : statusLower.includes('acquired')
       ? { bg: '#F5A4061A', text: '#F5A406' }
-      : statusLower.includes('closed') || statusLower.includes('dead')
+      : statusLower.includes('ipo')
+      ? { bg: '#0489A71A', text: '#0489A7' }
+      : statusLower.includes('closed') || statusLower.includes('dead') || statusLower.includes('shutdown')
       ? { bg: '#AE0E311A', text: '#AE0E31' }
       : { bg: '#4436461A', text: '#443646' };
+
+  // Format source name for display
+  const sourceLabel = (competitor.source || 'unknown').replace(/_/g, ' ');
 
   return (
     <tr
@@ -309,6 +358,11 @@ function CompetitorRow({ competitor }: { competitor: CompetitorInfo }) {
     >
       <td className="px-6 py-4 font-medium" style={{ color: '#023155' }}>
         {competitor.competitor_name}
+        {competitor.country && (
+          <span className="block text-xs mt-0.5" style={{ color: '#648C9C' }}>
+            {competitor.country}
+          </span>
+        )}
       </td>
       <td className="px-6 py-4" style={{ color: '#443646' }}>
         {competitor.market}
@@ -319,6 +373,14 @@ function CompetitorRow({ competitor }: { competitor: CompetitorInfo }) {
           style={{ backgroundColor: statusColor.bg, color: statusColor.text }}
         >
           {competitor.status}
+        </span>
+      </td>
+      <td className="px-6 py-4">
+        <span
+          className="px-2 py-0.5 rounded text-xs"
+          style={{ backgroundColor: '#0489A71A', color: '#0489A7' }}
+        >
+          {sourceLabel}
         </span>
       </td>
       <td className="px-6 py-4">

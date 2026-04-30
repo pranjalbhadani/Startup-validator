@@ -27,6 +27,8 @@ from agents.competitor_agent import find_competitors
 from agents.scoring_agent import (
     _preprocess_startups,
     ACTIVE_STATUSES,
+    compute_trend_score,
+    apply_macro_adjustment,
 )
 
 from graph.state import PipelineState
@@ -34,14 +36,60 @@ from graph.state import PipelineState
 
 # ─── Constants (from spec) ───────────────────────────────────────────────────
 
-MAX_COMPETITION_FOR_NORM = 50       # 50+ startups → competition_score = 1.0
-MAX_TOTAL_FUNDING_FOR_DEMAND = 1e9  # $1B total funding cap for demand
-MAX_AVG_FUNDING_FOR_SCORE = 1e7     # $10M avg funding cap
-CONFIDENCE_DENOMINATOR = 20         # min(n/20, 1) for confidence
+MAX_COMPETITION_FOR_NORM = 50
+MAX_TOTAL_FUNDING_FOR_DEMAND = 1e9
+MAX_AVG_FUNDING_FOR_SCORE = 1e7
+CONFIDENCE_DENOMINATOR = 20
 
 # Risk thresholds
 RISK_LOW_THRESHOLD = 70
 RISK_MEDIUM_THRESHOLD = 40
+
+# Scoring weights (aligned with scoring_agent.py)
+WEIGHT_SURVIVAL = 0.25
+WEIGHT_COMPETITION = 0.15
+WEIGHT_DEMAND = 0.20
+WEIGHT_FUNDING = 0.15
+WEIGHT_TREND = 0.15
+WEIGHT_UNICORN = 0.10
+
+
+# ─── Cached data loaders (loaded once per process) ──────────────────────────
+
+_cached_trends = None
+_cached_macro = None
+
+
+def _get_product_hunt_trends() -> list[dict]:
+    """Load Product Hunt trend data (cached after first call)."""
+    global _cached_trends
+    if _cached_trends is not None:
+        return _cached_trends
+
+    try:
+        from agents.data_ingestion import load_product_hunt_trends
+        _cached_trends = load_product_hunt_trends()
+    except Exception as e:
+        print(f"[LangGraph] Could not load PH trends: {e}")
+        _cached_trends = []
+
+    return _cached_trends
+
+
+def _get_macro_context() -> dict:
+    """Load macro context (cached after first call)."""
+    global _cached_macro
+    if _cached_macro is not None:
+        return _cached_macro
+
+    try:
+        from agents.data_ingestion import load_macro_context
+        _cached_macro = load_macro_context()
+    except Exception as e:
+        print(f"[LangGraph] Could not load macro context: {e}")
+        _cached_macro = {}
+
+    return _cached_macro
 
 
 # ─── Node 1: Input Agent ────────────────────────────────────────────────────
@@ -93,32 +141,41 @@ def input_agent(state: PipelineState) -> dict:
 
 def retrieval_agent(state: PipelineState) -> dict:
     """
-    Retrieves similar startups from the ChromaDB vector database
-    using the existing Competitor Similarity Agent (Agent 2).
+    Retrieves similar startups from the unified ChromaDB database,
+    loads Product Hunt trend data, and loads macro context.
 
-    If a LlamaIndex query_engine is added later, integrate it here.
-
-    Outputs: similar_startups (list of dicts with status + funding)
+    Outputs: similar_startups, source_breakdown, product_hunt_trends, macro_context
     """
     print("\n[LangGraph] Node: retrieval_agent — starting")
     start = time.time()
 
     idea_data = state.get("idea_data", {})
 
-    # Reuse existing ChromaDB retrieval
-    result = find_competitors(idea_data)
+    # Reuse existing ChromaDB retrieval (now unified across all sources)
+    result = find_competitors(idea_data, n_results=10)
     raw_competitors = result.get("competitors", [])
+    source_breakdown = result.get("source_breakdown", {})
 
-    # Normalize into a clean format for downstream agents
+    # Normalize into clean format for downstream scoring agents
     similar_startups = _preprocess_startups(raw_competitors)
+
+    # Load supplementary data
+    product_hunt_trends = _get_product_hunt_trends()
+    macro_context = _get_macro_context()
 
     elapsed = round(time.time() - start, 2)
     print(
         f"[LangGraph] Node: retrieval_agent — retrieved "
-        f"{len(similar_startups)} similar startups ({elapsed}s)"
+        f"{len(similar_startups)} startups from {len(source_breakdown)} sources ({elapsed}s)"
     )
 
-    return {"similar_startups": similar_startups}
+    return {
+        "similar_startups": similar_startups,
+        "raw_competitors": raw_competitors,
+        "source_breakdown": source_breakdown,
+        "product_hunt_trends": product_hunt_trends,
+        "macro_context": macro_context,
+    }
 
 
 # ─── Node 3a: Competitor Agent (parallel) ────────────────────────────────────
@@ -127,10 +184,6 @@ def retrieval_agent(state: PipelineState) -> dict:
 def competitor_agent(state: PipelineState) -> dict:
     """
     Computes competition_score from the number of similar startups.
-
-    Formula (from spec):
-      competition_score = min(number_of_startups / 50, 1)
-
     Outputs: competition_score (float, [0, 1])
     """
     print("\n[LangGraph] Node: competitor_agent — starting")
@@ -144,8 +197,7 @@ def competitor_agent(state: PipelineState) -> dict:
     elapsed = round(time.time() - start, 2)
     print(
         f"[LangGraph] Node: competitor_agent — "
-        f"startups={competition}, competition_score={round(competition_score, 4)} "
-        f"({elapsed}s)"
+        f"startups={competition}, competition_score={round(competition_score, 4)} ({elapsed}s)"
     )
 
     return {"competition_score": round(competition_score, 4)}
@@ -157,14 +209,7 @@ def competitor_agent(state: PipelineState) -> dict:
 def market_agent(state: PipelineState) -> dict:
     """
     Computes demand_score and funding_score from startup funding data.
-
-    Formulas (from spec):
-      total_funding = sum of all funding
-      avg_funding   = total_funding / number_of_startups
-      demand_score  = min(0.5 * (competition / 50) + 0.5 * (total_funding / 1e9), 1)
-      funding_score = min(avg_funding / 1e7, 1)
-
-    Outputs: demand_score (float, [0, 1]), funding_score (float, [0, 1])
+    Outputs: demand_score, funding_score
     """
     print("\n[LangGraph] Node: market_agent — starting")
     start = time.time()
@@ -202,10 +247,6 @@ def market_agent(state: PipelineState) -> dict:
 def failure_agent(state: PipelineState) -> dict:
     """
     Computes survival_rate from startup status data.
-
-    Active statuses: ["active", "operating", "ipo"]
-    survival_rate = active_count / total_count
-
     Outputs: survival_rate (float, [0, 1])
     """
     print("\n[LangGraph] Node: failure_agent — starting")
@@ -235,12 +276,7 @@ def failure_agent(state: PipelineState) -> dict:
 
 
 def normalization_layer(state: PipelineState) -> dict:
-    """
-    Ensures all metric values are clamped to [0, 1] range.
-
-    Reads: competition_score, demand_score, funding_score, survival_rate
-    Outputs: the same keys, clamped
-    """
+    """Ensures all metric values are clamped to [0, 1] range."""
     print("\n[LangGraph] Node: normalization_layer — starting")
 
     def clamp(v: float) -> float:
@@ -265,29 +301,13 @@ def normalization_layer(state: PipelineState) -> dict:
     }
 
 
-# ─── Node 5: Scoring Agent (CORE LOGIC) ────────────────────────────────────
+# ─── Node 5: Scoring Agent ─────────────────────────────────────────────────
 
 
 def scoring_agent(state: PipelineState) -> dict:
     """
-    Computes the final feasibility score using the opportunity–risk model.
-
-    Formulas (from spec):
-      opportunity = 0.6 * demand_score + 0.4 * funding_score
-      risk        = 0.6 * (1 - survival_rate) + 0.4 * (competition_score ** 1.5)
-      raw_score   = opportunity - risk
-      score       = (raw_score + 1) / 2
-      final_score = score * 100
-
-    Risk classification:
-      ≥ 70 → Low Risk
-      ≥ 40 → Medium Risk
-      < 40 → High Risk
-
-    Confidence:
-      confidence = min(number_of_startups / 20, 1)
-
-    Outputs: score, risk, confidence
+    Computes the final feasibility score using the enhanced opportunity–risk model.
+    Now includes trend_score and macro adjustments.
     """
     print("\n[LangGraph] Node: scoring_agent — starting")
     start = time.time()
@@ -297,22 +317,38 @@ def scoring_agent(state: PipelineState) -> dict:
     funding_score = state.get("funding_score", 0)
     survival_rate = state.get("survival_rate", 0)
     similar_startups = state.get("similar_startups", [])
+    keywords = state.get("keywords", [])
+    product_hunt_trends = state.get("product_hunt_trends", [])
+    macro_context = state.get("macro_context", {})
 
-    # ── Opportunity ──────────────────────────────────────────────────────
-    opportunity = 0.6 * demand_score + 0.4 * funding_score
+    # Compute trend score
+    trend_score = compute_trend_score(keywords, product_hunt_trends)
 
-    # ── Risk ─────────────────────────────────────────────────────────────
+    # Unicorn proximity from similar startups
+    unicorns = [s for s in similar_startups if s.get("valuation", 0) >= 1e9 or s.get("outcome") == "unicorn"]
+    total = len(similar_startups)
+    unicorn_proximity = len(unicorns) / total if total > 0 else 0.0
+
+    # ── Enhanced Score ───────────────────────────────────────────────────
+    opportunity = (
+        WEIGHT_DEMAND * demand_score
+        + WEIGHT_FUNDING * funding_score
+        + WEIGHT_TREND * trend_score
+        + WEIGHT_UNICORN * unicorn_proximity
+    )
     risk_value = (
-        0.6 * (1.0 - survival_rate)
-        + 0.4 * (competition_score ** 1.5)
+        WEIGHT_SURVIVAL * (1.0 - survival_rate)
+        + WEIGHT_COMPETITION * (competition_score ** 1.5)
     )
 
-    # ── Final Score ──────────────────────────────────────────────────────
     raw_score = opportunity - risk_value
     normalized = (raw_score + 1.0) / 2.0
     final_score = round(normalized * 100, 2)
 
-    # ── Risk Classification ──────────────────────────────────────────────
+    # Macro adjustment
+    final_score, macro_reasoning = apply_macro_adjustment(final_score, macro_context)
+
+    # Risk Classification
     if final_score >= RISK_LOW_THRESHOLD:
         risk_label = "Low"
     elif final_score >= RISK_MEDIUM_THRESHOLD:
@@ -320,21 +356,21 @@ def scoring_agent(state: PipelineState) -> dict:
     else:
         risk_label = "High"
 
-    # ── Confidence ───────────────────────────────────────────────────────
+    # Confidence
     confidence = round(min(len(similar_startups) / CONFIDENCE_DENOMINATOR, 1.0), 4)
 
     elapsed = round(time.time() - start, 2)
     print(
         f"[LangGraph] Node: scoring_agent — "
-        f"opportunity={round(opportunity, 4)}, risk={round(risk_value, 4)}, "
-        f"score={final_score}/100, risk_label={risk_label}, "
-        f"confidence={confidence} ({elapsed}s)"
+        f"score={final_score}/100, risk={risk_label}, "
+        f"trend={trend_score}, confidence={confidence} ({elapsed}s)"
     )
 
     return {
         "score": final_score,
         "risk": risk_label,
         "confidence": confidence,
+        "trend_score": trend_score,
     }
 
 
@@ -343,13 +379,8 @@ def scoring_agent(state: PipelineState) -> dict:
 
 def insight_generator(state: PipelineState) -> dict:
     """
-    Generates qualitative insights and actionable recommendations
-    from the computed metrics and score.
-
-    Reuses logic patterns from agents/scoring_agent.py but adapted
-    to the new pipeline state structure.
-
-    Outputs: insights, recommendations, final_result
+    Generates qualitative insights and actionable recommendations.
+    Enhanced with trend, unicorn, and macro data.
     """
     print("\n[LangGraph] Node: insight_generator — starting")
     start = time.time()
@@ -361,8 +392,12 @@ def insight_generator(state: PipelineState) -> dict:
     score = state.get("score", 0)
     risk = state.get("risk", "Unknown")
     confidence = state.get("confidence", 0)
+    trend_score = state.get("trend_score", 0)
     idea_data = state.get("idea_data", {})
     similar_startups = state.get("similar_startups", [])
+    raw_competitors = state.get("raw_competitors", [])
+    source_breakdown = state.get("source_breakdown", {})
+    macro_context = state.get("macro_context", {})
 
     # ── Competition level ────────────────────────────────────────────────
     if competition_score >= 0.7:
@@ -380,121 +415,143 @@ def insight_generator(state: PipelineState) -> dict:
     else:
         market_health = "Weak"
 
+    # ── Trend assessment ─────────────────────────────────────────────────
+    if trend_score >= 0.6:
+        trend_assessment = "Hot — strong Product Hunt traction"
+    elif trend_score >= 0.3:
+        trend_assessment = "Warm — moderate market interest"
+    else:
+        trend_assessment = "Cool — limited recent traction signals"
+
+    # ── Unicorn potential ────────────────────────────────────────────────
+    unicorns = [s for s in similar_startups if s.get("valuation", 0) >= 1e9 or s.get("outcome") == "unicorn"]
+    unicorn_proximity = len(unicorns) / len(similar_startups) if similar_startups else 0
+    if unicorn_proximity >= 0.3:
+        unicorn_potential = "High — sector has produced unicorns"
+    elif unicorn_proximity >= 0.1:
+        unicorn_potential = "Moderate — some unicorn activity"
+    else:
+        unicorn_potential = "Low — sector has few/no unicorns"
+
     insights = {
         "competition_level": competition_level,
         "market_health": market_health,
+        "trend_assessment": trend_assessment,
+        "unicorn_potential": unicorn_potential,
+        "data_sources_used": list(source_breakdown.keys()) if source_breakdown else [],
     }
+
+    if macro_context:
+        insights["macro_interest_rate"] = macro_context.get("interest_rate")
+        insights["macro_cpi"] = macro_context.get("cpi")
 
     # ── Recommendations ──────────────────────────────────────────────────
     recommendations: list[str] = []
 
-    # High competition → differentiation
     if competition_score >= 0.7:
         recommendations.append(
             "The market is highly competitive. Focus on a strong unique value "
-            "proposition and niche targeting to differentiate from existing players."
+            "proposition and niche targeting to differentiate."
         )
 
-    # Low survival rate → risk warning
     if survival_rate < 0.4:
         recommendations.append(
             "Survival rate among similar startups is low. Validate demand "
-            "thoroughly before committing significant resources. Consider "
-            "lean experimentation to de-risk early."
+            "thoroughly before committing significant resources."
         )
 
-    # High demand → opportunity window
     if demand_score >= 0.6:
         recommendations.append(
-            "Market demand signals are strong. This is a good opportunity "
-            "window — move fast and aim for early traction to capture share."
+            "Market demand signals are strong. Move fast and aim for early traction."
         )
 
-    # Low funding → weak investor confidence
     if funding_score < 0.3:
         recommendations.append(
-            "Average funding in this space is relatively low, suggesting "
-            "cautious investor sentiment. Prepare a compelling pitch and "
-            "consider bootstrapping or alternative funding sources."
+            "Average funding is low. Consider bootstrapping or alternative funding."
         )
 
-    # High funding → strong ecosystem
     if funding_score >= 0.7:
         recommendations.append(
-            "Investor confidence in this sector is high. Leverage this by "
-            "pursuing venture funding to accelerate growth."
+            "Investor confidence is high. Pursue venture funding to accelerate growth."
         )
 
-    # Low competition → blue ocean
     if competition_score < 0.2:
         recommendations.append(
-            "Competition is minimal. Validate that this reflects genuine "
-            "opportunity rather than lack of market demand."
+            "Competition is minimal. Validate this reflects genuine opportunity."
         )
 
-    # Small dataset warning
+    if trend_score >= 0.6:
+        recommendations.append(
+            "Product Hunt trends show strong traction. Consider a PH launch for visibility."
+        )
+
+    if unicorn_proximity >= 0.2:
+        recommendations.append(
+            "This sector has produced unicorns. Study their growth strategies."
+        )
+
     if len(similar_startups) < 3:
-        recommendations.insert(
-            0,
+        recommendations.insert(0,
             "⚠ Only a small number of comparable startups were found. "
             "Results should be interpreted with caution."
         )
 
-    # No data
     if not similar_startups:
         recommendations.append(
-            "No comparable startups were found in the database. "
-            "This could indicate a novel idea or insufficient data. "
-            "Consider manual market research to validate demand."
+            "No comparable startups found. Consider manual market research."
         )
 
-    # Fallback
     if not recommendations:
         recommendations.append(
-            "The market shows balanced signals. Continue with standard "
-            "validation — customer interviews, prototyping, and iterative testing."
+            "The market shows balanced signals. Continue with standard validation."
         )
 
-    # ── Assemble final result (matches API output schema) ────────────────
+    # ── Assemble final result ────────────────────────────────────────────
+    # Use raw_competitors (original data from ChromaDB with competitor_name, market,
+    # similarity_distance) for the API response, not the preprocessed similar_startups
+    # which renames fields for internal scoring use.
     final_result = {
         # Idea data
-        "startup_name": idea_data.get(
-            "startup_name", state.get("startup_name", "Unknown")
-        ),
+        "startup_name": idea_data.get("startup_name", state.get("startup_name", "Unknown")),
         "industry_detected": idea_data.get("industry", "Unknown"),
-        "target_market": idea_data.get(
-            "target_market", state.get("target_market", "")
-        ),
+        "target_market": idea_data.get("target_market", state.get("target_market", "")),
         "core_proposition": idea_data.get("core_proposition", ""),
-        "revenue_model": idea_data.get(
-            "revenue_model", state.get("revenue_model", "")
-        ),
+        "revenue_model": idea_data.get("revenue_model", state.get("revenue_model", "")),
         "keywords": idea_data.get("keywords", []),
 
-        # Competitors
-        "competition_score": round(competition_score * 10, 1),  # scale to 0-10 for UI
-        "competitors": similar_startups,
+        # Competitors — use raw data so frontend gets competitor_name, market, similarity_distance
+        "competition_score": round(competition_score * 10, 1),
+        "competitors": raw_competitors if raw_competitors else similar_startups,
 
         # Core scores
         "feasibility_score": score,
         "risk_level": risk,
-        "market_score": round(demand_score * 10, 1),  # scale to 0-10 for UI
+        "market_score": round(demand_score * 10, 1),
 
         # Reasoning
         "market_reasoning": (
             f"Market health is {market_health}. "
-            f"Competition level is {competition_level}."
+            f"Competition level is {competition_level}. "
+            f"Trend: {trend_assessment}."
         ),
         "risk_reasoning": "; ".join(recommendations),
 
         # Overall
-        "overall_validation_score": round(score / 10, 2),  # scale to 0-10 for UI
+        "overall_validation_score": round(score / 10, 2),
 
-        # Structured scoring report (spec output format)
+        # Enriched data
+        "trend_score": trend_score,
+        "trend_assessment": trend_assessment,
+        "unicorn_potential": unicorn_potential,
+        "data_sources_used": list(source_breakdown.keys()) if source_breakdown else [],
+        "macro_context": macro_context if macro_context else {},
+
+        # Structured scoring report
         "scoring_report": {
             "score": score,
             "risk": risk,
             "confidence": confidence,
+            "trend_score": trend_score,
             "metrics": {
                 "survival_rate": survival_rate,
                 "competition_score": competition_score,
@@ -505,7 +562,7 @@ def insight_generator(state: PipelineState) -> dict:
             "recommendations": recommendations,
         },
 
-        # Top-level spec output fields
+        # Top-level spec fields
         "score": score,
         "risk": risk,
         "confidence": confidence,
@@ -522,8 +579,8 @@ def insight_generator(state: PipelineState) -> dict:
     elapsed = round(time.time() - start, 2)
     print(
         f"[LangGraph] Node: insight_generator — "
-        f"competition_level={competition_level}, market_health={market_health}, "
-        f"{len(recommendations)} recommendations ({elapsed}s)"
+        f"competition={competition_level}, market={market_health}, "
+        f"trend={trend_assessment}, {len(recommendations)} recommendations ({elapsed}s)"
     )
 
     return {

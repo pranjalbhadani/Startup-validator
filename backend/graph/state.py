@@ -19,7 +19,7 @@ class PipelineState(TypedDict, total=False):
 
     Keys are added progressively as each agent runs:
       - input_agent         → idea_data (keywords, industry, etc.)
-      - retrieval_agent     → similar_startups (from ChromaDB or mock)
+      - retrieval_agent     → similar_startups, source_breakdown, product_hunt_trends, macro_context
       - competitor_agent    → competition_score
       - market_agent        → demand_score, funding_score
       - failure_agent       → survival_rate
@@ -39,7 +39,11 @@ class PipelineState(TypedDict, total=False):
     keywords: list           # extracted keywords for retrieval
 
     # ── Retrieval Agent outputs ──────────────────────────────────────────
-    similar_startups: list   # list of dicts with status + funding
+    similar_startups: list   # list of dicts with status + funding (preprocessed)
+    raw_competitors: list    # original competitor data from ChromaDB (with competitor_name, market, similarity_distance)
+    source_breakdown: dict   # count of results per data source
+    product_hunt_trends: list  # aggregated PH trend data for matching topics
+    macro_context: dict      # latest macro indicators (interest_rate, cpi, etc.)
 
     # ── Competitor Agent outputs (parallel) ──────────────────────────────
     competition_score: float  # normalized [0, 1]
@@ -55,9 +59,10 @@ class PipelineState(TypedDict, total=False):
     score: float              # 0–100 final feasibility score
     risk: str                 # "Low" | "Medium" | "High"
     confidence: float         # [0, 1] confidence based on data quantity
+    trend_score: float        # [0, 1] Product Hunt trend signal
 
     # ── Insight Generator outputs ────────────────────────────────────────
-    insights: dict            # competition_level, market_health
+    insights: dict            # competition_level, market_health, trend_assessment, etc.
     recommendations: list     # actionable recommendation strings
 
     # ── Final assembled result ───────────────────────────────────────────
