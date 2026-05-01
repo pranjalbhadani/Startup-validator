@@ -34,6 +34,50 @@ export interface CompetitorInfo {
 }
 
 /**
+ * A single risk factor from the scoring engine.
+ */
+export interface RiskFactor {
+  factor: string;
+  severity: 'Low' | 'Medium' | 'High';
+  detail: string;
+}
+
+/**
+ * A single opportunity signal from the scoring engine.
+ */
+export interface OpportunitySignal {
+  signal: string;
+  strength: 'Weak' | 'Moderate' | 'Strong';
+  detail: string;
+}
+
+/**
+ * Qualitative insights derived from the scoring metrics.
+ */
+export interface ScoringInsights {
+  competition_level: string;
+  market_health: string;
+  trend_assessment?: string;
+  unicorn_potential?: string;
+  avg_funding_usd?: number;
+}
+
+/**
+ * Full scoring report from Agent 3 — Scoring Engine.
+ */
+export interface ScoringReport {
+  score: number;
+  risk: string;
+  recommendations: string[];
+  confidence: string;
+  trend_score?: number;
+  macro_adjustment?: string;
+  risk_factors?: RiskFactor[];
+  opportunity_signals?: OpportunitySignal[];
+  insights?: ScoringInsights;
+}
+
+/**
  * Shape of the response from /validate
  */
 export interface ValidationResponse {
@@ -51,7 +95,7 @@ export interface ValidationResponse {
   market_reasoning?: string;
   risk_reasoning?: string;
   overall_validation_score?: number;
-  scoring_report?: Record<string, unknown>;
+  scoring_report?: ScoringReport;
   // Enriched fields
   trend_score?: number;
   trend_assessment?: string;

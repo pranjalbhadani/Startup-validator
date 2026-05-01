@@ -19,6 +19,19 @@ Design Principles:
 """
 
 from typing import Any
+import os
+import json
+
+from google import genai
+from google.genai import types
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Initialize Gemini client for AI-powered insights
+_gemini_client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+_gemini_config = types.GenerateContentConfig(response_mime_type="application/json")
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -384,6 +397,250 @@ def _generate_recommendations(metrics: dict, score: float, trend_score: float = 
     return recommendations
 
 
+# ─── Risk Factors ─────────────────────────────────────────────────────────────
+
+def _derive_risk_factors(metrics: dict, trend_score: float = 0.0, macro_context: dict = None) -> list[dict]:
+    """Derive structured risk factors from existing metrics."""
+    factors: list[dict] = []
+
+    comp = metrics["competition_normalized"]
+    if comp >= 0.7:
+        factors.append({"factor": "High Competition", "severity": "High",
+            "detail": f"Market is crowded with {metrics['total_startups']} similar startups (normalized: {comp:.0%})."})
+    elif comp >= 0.4:
+        factors.append({"factor": "Moderate Competition", "severity": "Medium",
+            "detail": f"{metrics['total_startups']} competitors detected (normalized: {comp:.0%})."})
+
+    survival = metrics["survival_rate"]
+    if survival < 0.3:
+        factors.append({"factor": "Low Survival Rate", "severity": "High",
+            "detail": f"Only {survival:.0%} of similar startups are still active."})
+    elif survival < 0.5:
+        factors.append({"factor": "Below-Average Survival", "severity": "Medium",
+            "detail": f"{survival:.0%} survival rate among comparable startups."})
+
+    funding = metrics["funding_score"]
+    if funding < 0.2:
+        factors.append({"factor": "Weak Funding Environment", "severity": "High",
+            "detail": "Average funding in this space is very low, indicating cautious investors."})
+    elif funding < 0.4:
+        factors.append({"factor": "Limited Funding", "severity": "Medium",
+            "detail": "Moderate investor interest — may need alternative funding strategies."})
+
+    if trend_score < 0.15:
+        factors.append({"factor": "Low Market Traction", "severity": "Medium",
+            "detail": "Product Hunt trend signals are weak for related topics."})
+
+    if macro_context:
+        ir = macro_context.get("interest_rate")
+        if ir is not None and float(ir) > 5.0:
+            factors.append({"factor": "High Interest Rates", "severity": "Medium",
+                "detail": f"Current rate ({float(ir):.1f}%) increases cost of capital."})
+        cpi = macro_context.get("cpi")
+        if cpi is not None and float(cpi) > 300:
+            factors.append({"factor": "Inflationary Pressure", "severity": "Low",
+                "detail": "Elevated CPI increases operational costs."})
+
+    return factors
+
+
+# ─── Opportunity Signals ──────────────────────────────────────────────────────
+
+def _derive_opportunity_signals(metrics: dict, trend_score: float = 0.0) -> list[dict]:
+    """Derive structured opportunity signals from existing metrics."""
+    signals: list[dict] = []
+
+    demand = metrics["demand_score"]
+    if demand >= 0.7:
+        signals.append({"signal": "Strong Market Demand", "strength": "Strong",
+            "detail": "High demand score indicates significant unmet market needs."})
+    elif demand >= 0.4:
+        signals.append({"signal": "Moderate Demand", "strength": "Moderate",
+            "detail": "Demand signals are encouraging but not overwhelming."})
+
+    comp = metrics["competition_normalized"]
+    if comp < 0.2:
+        signals.append({"signal": "Low Competition", "strength": "Strong",
+            "detail": "Very few competitors — potential blue ocean opportunity."})
+    elif comp < 0.4:
+        signals.append({"signal": "Manageable Competition", "strength": "Moderate",
+            "detail": "Competition exists but the market is not saturated."})
+
+    funding = metrics["funding_score"]
+    if funding >= 0.6:
+        signals.append({"signal": "High Investor Confidence", "strength": "Strong",
+            "detail": "Strong average funding suggests active investor interest in this sector."})
+
+    if trend_score >= 0.5:
+        signals.append({"signal": "Trending Market", "strength": "Strong",
+            "detail": "Product Hunt data shows strong recent traction in related topics."})
+    elif trend_score >= 0.25:
+        signals.append({"signal": "Growing Interest", "strength": "Moderate",
+            "detail": "Moderate trend signals suggest building momentum."})
+
+    up = metrics["unicorn_proximity"]
+    if up >= 0.2:
+        signals.append({"signal": "Unicorn Sector", "strength": "Strong",
+            "detail": "This sector has produced unicorn-level companies."})
+
+    if metrics["survival_rate"] >= 0.6:
+        signals.append({"signal": "High Survivability", "strength": "Strong",
+            "detail": f"{metrics['survival_rate']:.0%} of similar startups are still active."})
+
+    return signals
+
+
+# ─── Gemini AI-Powered Insight Generation ────────────────────────────────────
+
+
+def generate_ai_insights(
+    metrics: dict,
+    idea_description: str = "",
+    startup_name: str = "",
+    industry: str = "",
+    target_market: str = "",
+    keywords: list[str] = None,
+    trend_score: float = 0.0,
+    macro_context: dict = None,
+    score: float = 0.0,
+    risk: str = "Unknown",
+) -> dict:
+    """
+    Call Gemini to produce rich, context-aware insights instead of hard-coded templates.
+
+    Returns a dict with keys:
+      - insights: {competition_level, market_health, trend_assessment, unicorn_potential, ...}
+      - recommendations: [str, ...]
+      - risk_factors: [{factor, severity, detail}, ...]
+      - opportunity_signals: [{signal, strength, detail}, ...]
+      - market_reasoning: str
+      - risk_reasoning: str
+
+    Falls back to the deterministic helpers on any failure.
+    """
+    prompt = f"""You are a senior venture-capital analyst. Given the scoring metrics and context below,
+produce a structured JSON analysis of this startup idea.
+
+## Context
+- Startup Name: {startup_name}
+- Industry: {industry}
+- Target Market: {target_market}
+- Keywords: {', '.join(keywords or [])}
+- Idea: {idea_description[:500]}
+
+## Computed Metrics (0–1 normalized unless noted)
+- Total similar startups found: {metrics.get('total_startups', 0)}
+- Active/operating startups: {metrics.get('active_count', 0)}
+- Failed startups: {metrics.get('failed_count', 0)}
+- Survival rate: {metrics.get('survival_rate', 0):.2%}
+- Competition (normalized): {metrics.get('competition_normalized', 0):.2%}
+- Demand score: {metrics.get('demand_score', 0):.2%}
+- Funding score: {metrics.get('funding_score', 0):.2%}
+- Avg funding: ${metrics.get('avg_funding', 0):,.0f}
+- Unicorn proximity: {metrics.get('unicorn_proximity', 0):.2%}
+- Trend score: {trend_score:.2%}
+- Feasibility score: {score}/100
+- Risk classification: {risk}
+- Macro interest rate: {macro_context.get('interest_rate', 'N/A') if macro_context else 'N/A'}
+- Macro CPI: {macro_context.get('cpi', 'N/A') if macro_context else 'N/A'}
+
+## Instructions
+Return ONLY valid JSON matching this exact schema:
+
+{{
+  "insights": {{
+    "competition_level": "High | Moderate | Low",
+    "market_health": "Strong | Moderate | Weak",
+    "trend_assessment": "<1-2 sentence assessment of market trends>",
+    "unicorn_potential": "<1-2 sentence assessment of unicorn potential>",
+    "avg_funding_usd": <number>,
+    "data_sources_used": []
+  }},
+  "recommendations": [
+    "<3-5 actionable, specific recommendations tailored to THIS startup>"
+  ],
+  "risk_factors": [
+    {{
+      "factor": "<short risk name>",
+      "severity": "Low | Medium | High",
+      "detail": "<1-2 sentence explanation specific to the startup>"
+    }}
+  ],
+  "opportunity_signals": [
+    {{
+      "signal": "<short opportunity name>",
+      "strength": "Weak | Moderate | Strong",
+      "detail": "<1-2 sentence explanation specific to the startup>"
+    }}
+  ],
+  "market_reasoning": "<a rich paragraph explaining the market dynamics, competition landscape, and demand signals for this startup>",
+  "risk_reasoning": "<a rich paragraph with actionable advice combining the risk and opportunity analysis>"
+}}
+
+Rules:
+- Be specific to the startup's industry and target market, not generic
+- Ground assessments in the numeric metrics provided
+- Include 2-5 risk_factors and 2-5 opportunity_signals
+- Include 3-5 recommendations
+- market_reasoning and risk_reasoning should each be 2-4 sentences
+- competition_level, market_health must match the enum values exactly
+- risk_factors.severity must be one of: Low, Medium, High
+- opportunity_signals.strength must be one of: Weak, Moderate, Strong
+"""
+
+    try:
+        response = _gemini_client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=_gemini_config,
+        )
+
+        result = json.loads(response.text)
+        print("[Agent 3 - Scoring Engine] Gemini AI insights generated successfully.")
+
+        # Validate structure minimally and backfill missing keys
+        if "insights" not in result:
+            result["insights"] = {}
+        if "recommendations" not in result or not result["recommendations"]:
+            result["recommendations"] = _generate_recommendations(metrics, score, trend_score)
+        if "risk_factors" not in result or not result["risk_factors"]:
+            result["risk_factors"] = _derive_risk_factors(metrics, trend_score, macro_context)
+        if "opportunity_signals" not in result or not result["opportunity_signals"]:
+            result["opportunity_signals"] = _derive_opportunity_signals(metrics, trend_score)
+
+        # Ensure insights has required keys
+        insights = result["insights"]
+        insights.setdefault("competition_level", "Unknown")
+        insights.setdefault("market_health", "Unknown")
+        insights.setdefault("trend_assessment", "No data")
+        insights.setdefault("unicorn_potential", "Unknown")
+        insights.setdefault("avg_funding_usd", metrics.get("avg_funding", 0))
+        insights.setdefault("data_sources_used", metrics.get("sources", []))
+
+        # Ensure reasoning fields exist
+        result.setdefault("market_reasoning", "")
+        result.setdefault("risk_reasoning", "")
+
+        return result
+
+    except Exception as e:
+        print(f"[Agent 3 - Scoring Engine] Gemini call failed, using deterministic fallback: {e}")
+        # Fall back to existing deterministic functions
+        fallback_insights = _generate_insights(metrics, trend_score, macro_context)
+        fallback_recommendations = _generate_recommendations(metrics, score, trend_score)
+        fallback_risk_factors = _derive_risk_factors(metrics, trend_score, macro_context)
+        fallback_opportunities = _derive_opportunity_signals(metrics, trend_score)
+
+        return {
+            "insights": fallback_insights,
+            "recommendations": fallback_recommendations,
+            "risk_factors": fallback_risk_factors,
+            "opportunity_signals": fallback_opportunities,
+            "market_reasoning": "",
+            "risk_reasoning": "; ".join(fallback_recommendations),
+        }
+
+
 # ─── Edge-Case Defaults ──────────────────────────────────────────────────────
 
 def _empty_response() -> dict:
@@ -412,6 +669,9 @@ def _empty_response() -> dict:
         "confidence": "none",
         "trend_score": 0.0,
         "macro_adjustment": "",
+        "risk_factors": [],
+        "opportunity_signals": [],
+        "similar_startups": [],
     }
 
 
@@ -487,6 +747,21 @@ def score_startups(
     insights = _generate_insights(metrics, trend_score, macro_context)
     recommendations = _generate_recommendations(metrics, final_score, trend_score, macro_reasoning)
 
+    # Derive risk factors and opportunity signals from existing metrics
+    risk_factors = _derive_risk_factors(metrics, trend_score, macro_context)
+    opportunity_signals = _derive_opportunity_signals(metrics, trend_score)
+
+    # Summarize similar startups for report (reuse already-cleaned data)
+    similar_startups = [
+        {
+            "name": s["name"],
+            "status": s["status"],
+            "funding_total_usd": s["funding_total_usd"],
+            "source": s["source"],
+        }
+        for s in cleaned
+    ]
+
     result = {
         "score": final_score,
         "risk": risk,
@@ -496,6 +771,9 @@ def score_startups(
         "confidence": "high",
         "trend_score": trend_score,
         "macro_adjustment": macro_reasoning,
+        "risk_factors": risk_factors,
+        "opportunity_signals": opportunity_signals,
+        "similar_startups": similar_startups,
     }
 
     if len(cleaned) < 3:

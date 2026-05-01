@@ -29,6 +29,7 @@ from agents.scoring_agent import (
     ACTIVE_STATUSES,
     compute_trend_score,
     apply_macro_adjustment,
+    generate_ai_insights,
 )
 
 from graph.state import PipelineState
@@ -380,7 +381,7 @@ def scoring_agent(state: PipelineState) -> dict:
 def insight_generator(state: PipelineState) -> dict:
     """
     Generates qualitative insights and actionable recommendations.
-    Enhanced with trend, unicorn, and macro data.
+    Uses Gemini AI for rich, context-aware analysis with deterministic fallback.
     """
     print("\n[LangGraph] Node: insight_generator — starting")
     start = time.time()
@@ -398,98 +399,64 @@ def insight_generator(state: PipelineState) -> dict:
     raw_competitors = state.get("raw_competitors", [])
     source_breakdown = state.get("source_breakdown", {})
     macro_context = state.get("macro_context", {})
+    keywords = state.get("keywords", [])
 
-    # ── Competition level ────────────────────────────────────────────────
-    if competition_score >= 0.7:
-        competition_level = "High"
-    elif competition_score >= 0.3:
-        competition_level = "Moderate"
-    else:
-        competition_level = "Low"
+    # Build metrics dict for generate_ai_insights()
+    total = len(similar_startups)
+    active_count = sum(1 for s in similar_startups if s.get("status", "").lower() in ACTIVE_STATUSES)
+    failed_count = sum(1 for s in similar_startups if s.get("status", "").lower() in {"closed", "shutdown"})
+    total_funding = sum(s.get("funding_total_usd", 0) for s in similar_startups)
+    avg_funding = total_funding / total if total > 0 else 0.0
 
-    # ── Market health ────────────────────────────────────────────────────
-    if survival_rate >= 0.6:
-        market_health = "Strong"
-    elif survival_rate >= 0.3:
-        market_health = "Moderate"
-    else:
-        market_health = "Weak"
-
-    # ── Trend assessment ─────────────────────────────────────────────────
-    if trend_score >= 0.6:
-        trend_assessment = "Hot — strong Product Hunt traction"
-    elif trend_score >= 0.3:
-        trend_assessment = "Warm — moderate market interest"
-    else:
-        trend_assessment = "Cool — limited recent traction signals"
-
-    # ── Unicorn potential ────────────────────────────────────────────────
     unicorns = [s for s in similar_startups if s.get("valuation", 0) >= 1e9 or s.get("outcome") == "unicorn"]
-    unicorn_proximity = len(unicorns) / len(similar_startups) if similar_startups else 0
-    if unicorn_proximity >= 0.3:
-        unicorn_potential = "High — sector has produced unicorns"
-    elif unicorn_proximity >= 0.1:
-        unicorn_potential = "Moderate — some unicorn activity"
-    else:
-        unicorn_potential = "Low — sector has few/no unicorns"
+    unicorn_proximity = len(unicorns) / total if total > 0 else 0.0
 
-    insights = {
-        "competition_level": competition_level,
-        "market_health": market_health,
-        "trend_assessment": trend_assessment,
-        "unicorn_potential": unicorn_potential,
-        "data_sources_used": list(source_breakdown.keys()) if source_breakdown else [],
+    metrics = {
+        "total_startups": total,
+        "active_count": active_count,
+        "failed_count": failed_count,
+        "total_funding": round(total_funding, 2),
+        "avg_funding": round(avg_funding, 2),
+        "survival_rate": survival_rate,
+        "competition_normalized": competition_score,
+        "demand_score": demand_score,
+        "funding_score": funding_score,
+        "unicorn_proximity": round(unicorn_proximity, 4),
+        "source_count": len(source_breakdown),
+        "sources": list(source_breakdown.keys()) if source_breakdown else [],
     }
 
-    if macro_context:
-        insights["macro_interest_rate"] = macro_context.get("interest_rate")
-        insights["macro_cpi"] = macro_context.get("cpi")
+    # ── Call Gemini for AI-powered insights ───────────────────────────────
+    ai_result = generate_ai_insights(
+        metrics=metrics,
+        idea_description=state.get("idea_description", ""),
+        startup_name=idea_data.get("startup_name", state.get("startup_name", "Unknown")),
+        industry=idea_data.get("industry", "Unknown"),
+        target_market=idea_data.get("target_market", state.get("target_market", "")),
+        keywords=keywords,
+        trend_score=trend_score,
+        macro_context=macro_context,
+        score=score,
+        risk=risk,
+    )
 
-    # ── Recommendations ──────────────────────────────────────────────────
-    recommendations: list[str] = []
+    insights = ai_result.get("insights", {})
+    recommendations = ai_result.get("recommendations", [])
+    risk_factors = ai_result.get("risk_factors", [])
+    opportunity_signals = ai_result.get("opportunity_signals", [])
+    market_reasoning = ai_result.get("market_reasoning", "")
+    risk_reasoning = ai_result.get("risk_reasoning", "")
 
-    if competition_score >= 0.7:
-        recommendations.append(
-            "The market is highly competitive. Focus on a strong unique value "
-            "proposition and niche targeting to differentiate."
-        )
+    # Ensure data_sources_used is populated
+    insights.setdefault("data_sources_used", list(source_breakdown.keys()) if source_breakdown else [])
 
-    if survival_rate < 0.4:
-        recommendations.append(
-            "Survival rate among similar startups is low. Validate demand "
-            "thoroughly before committing significant resources."
-        )
+    # Extract values for logging
+    competition_level = insights.get("competition_level", "Unknown")
+    market_health = insights.get("market_health", "Unknown")
+    trend_assessment = insights.get("trend_assessment", "No data")
+    unicorn_potential = insights.get("unicorn_potential", "Unknown")
 
-    if demand_score >= 0.6:
-        recommendations.append(
-            "Market demand signals are strong. Move fast and aim for early traction."
-        )
-
-    if funding_score < 0.3:
-        recommendations.append(
-            "Average funding is low. Consider bootstrapping or alternative funding."
-        )
-
-    if funding_score >= 0.7:
-        recommendations.append(
-            "Investor confidence is high. Pursue venture funding to accelerate growth."
-        )
-
-    if competition_score < 0.2:
-        recommendations.append(
-            "Competition is minimal. Validate this reflects genuine opportunity."
-        )
-
-    if trend_score >= 0.6:
-        recommendations.append(
-            "Product Hunt trends show strong traction. Consider a PH launch for visibility."
-        )
-
-    if unicorn_proximity >= 0.2:
-        recommendations.append(
-            "This sector has produced unicorns. Study their growth strategies."
-        )
-
+    # Add low-data-confidence warning
     if len(similar_startups) < 3:
         recommendations.insert(0,
             "⚠ Only a small number of comparable startups were found. "
@@ -499,11 +466,6 @@ def insight_generator(state: PipelineState) -> dict:
     if not similar_startups:
         recommendations.append(
             "No comparable startups found. Consider manual market research."
-        )
-
-    if not recommendations:
-        recommendations.append(
-            "The market shows balanced signals. Continue with standard validation."
         )
 
     # ── Assemble final result ────────────────────────────────────────────
@@ -528,13 +490,13 @@ def insight_generator(state: PipelineState) -> dict:
         "risk_level": risk,
         "market_score": round(demand_score * 10, 1),
 
-        # Reasoning
-        "market_reasoning": (
+        # Reasoning — now from Gemini AI
+        "market_reasoning": market_reasoning or (
             f"Market health is {market_health}. "
             f"Competition level is {competition_level}. "
             f"Trend: {trend_assessment}."
         ),
-        "risk_reasoning": "; ".join(recommendations),
+        "risk_reasoning": risk_reasoning or "; ".join(recommendations),
 
         # Overall
         "overall_validation_score": round(score / 10, 2),
@@ -546,20 +508,17 @@ def insight_generator(state: PipelineState) -> dict:
         "data_sources_used": list(source_breakdown.keys()) if source_breakdown else [],
         "macro_context": macro_context if macro_context else {},
 
-        # Structured scoring report
+        # Structured scoring report — now includes risk_factors and opportunity_signals
         "scoring_report": {
             "score": score,
             "risk": risk,
-            "confidence": confidence,
+            "confidence": "high" if confidence >= 0.7 else "moderate" if confidence >= 0.3 else "low",
             "trend_score": trend_score,
-            "metrics": {
-                "survival_rate": survival_rate,
-                "competition_score": competition_score,
-                "demand_score": demand_score,
-                "funding_score": funding_score,
-            },
+            "metrics": metrics,
             "insights": insights,
             "recommendations": recommendations,
+            "risk_factors": risk_factors,
+            "opportunity_signals": opportunity_signals,
         },
 
         # Top-level spec fields
@@ -580,7 +539,8 @@ def insight_generator(state: PipelineState) -> dict:
     print(
         f"[LangGraph] Node: insight_generator — "
         f"competition={competition_level}, market={market_health}, "
-        f"trend={trend_assessment}, {len(recommendations)} recommendations ({elapsed}s)"
+        f"trend={trend_assessment}, {len(recommendations)} recommendations, "
+        f"{len(risk_factors)} risks, {len(opportunity_signals)} opportunities ({elapsed}s)"
     )
 
     return {
@@ -588,3 +548,4 @@ def insight_generator(state: PipelineState) -> dict:
         "recommendations": recommendations,
         "final_result": final_result,
     }
+

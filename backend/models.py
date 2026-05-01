@@ -66,6 +66,28 @@ class ScoringInsights(BaseModel):
     macro_cpi: Optional[float] = None
 
 
+class RiskFactor(BaseModel):
+    """A single derived risk factor."""
+    factor: str
+    severity: str  # "Low" | "Medium" | "High"
+    detail: str
+
+
+class OpportunitySignal(BaseModel):
+    """A single derived opportunity signal."""
+    signal: str
+    strength: str  # "Weak" | "Moderate" | "Strong"
+    detail: str
+
+
+class SimilarStartupSummary(BaseModel):
+    """Summary of a similar startup included in the report."""
+    name: str
+    status: str
+    funding_total_usd: float
+    source: str
+
+
 class ScoringReport(BaseModel):
     """Full output from Agent 3 — Scoring Engine."""
 
@@ -77,6 +99,9 @@ class ScoringReport(BaseModel):
     confidence: str
     trend_score: Optional[float] = 0.0
     macro_adjustment: Optional[str] = ""
+    risk_factors: Optional[List[RiskFactor]] = []
+    opportunity_signals: Optional[List[OpportunitySignal]] = []
+    similar_startups: Optional[List[SimilarStartupSummary]] = []
 
 
 # ─── Combined Pipeline Output ────────────────────────────────────────────────
@@ -91,7 +116,7 @@ class ValidationResult(BaseModel):
     core_proposition: str
     revenue_model: str
     keywords: List[str]
-    competition_score: int
+    competition_score: float
     competitors: List[CompetitorInfo]
     feasibility_score: float
     risk_level: str

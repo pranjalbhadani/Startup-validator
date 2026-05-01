@@ -5,7 +5,7 @@ Exposes the /validate endpoint that runs the multi-agent pipeline.
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from models import StartupInput
+from models import StartupInput, ValidationResult
 from langgraph_pipeline import run_pipeline
 
 # Initialize the FastAPI application
@@ -15,7 +15,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# Allow CORS so the Streamlit frontend can communicate
+# Allow CORS so the frontend can communicate
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,12 +31,12 @@ def root():
     return {"status": "running", "message": "Venture Validator API is live."}
 
 
-@app.post("/validate")
+@app.post("/validate", response_model=ValidationResult)
 def validate(data: StartupInput):
     """
     Main validation endpoint.
-    Accepts a StartupInput and runs it through the Idea → Competitor pipeline.
-    Returns a structured validation report.
+    Accepts a StartupInput and runs it through the multi-agent pipeline.
+    Returns a structured validation report with AI-powered insights.
     """
 
     result = run_pipeline(
@@ -47,3 +47,4 @@ def validate(data: StartupInput):
     )
 
     return result
+

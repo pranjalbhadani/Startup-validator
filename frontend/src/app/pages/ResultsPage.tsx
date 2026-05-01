@@ -1,9 +1,9 @@
-import { Download, Copy, ChevronDown, TrendingUp, Target, CheckCircle, BarChart3, AlertTriangle, ArrowLeft } from 'lucide-react';
+import { Copy, ChevronDown, TrendingUp, Target, CheckCircle, BarChart3, AlertTriangle, ArrowLeft, ThumbsUp, ThumbsDown, Lightbulb, Flame, type LucideIcon } from 'lucide-react';
 import { ScoreCard } from '../components/ScoreCard';
 import { useState } from 'react';
 import { useValidation } from '../ValidationContext';
 import { Link } from 'react-router';
-import type { CompetitorInfo } from '../api';
+import type { CompetitorInfo, OpportunitySignal, RiskFactor } from '../api';
 
 export function ResultsPage() {
   const [showReasoning, setShowReasoning] = useState(false);
@@ -198,6 +198,9 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
         />
       </div>
 
+      {/* SWOT Analysis */}
+      <SWOTSection result={result} />
+
       {/* Competitor Analysis Table */}
       {result.competitors.length > 0 && (
         <div className="mb-8">
@@ -322,6 +325,144 @@ ${result.competitors.map((c) => `  - ${c.competitor_name} (${c.market}, ${c.stat
             </p>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── SWOT Analysis ────────────────────────────────────────────────────────────
+
+type SwotItem = { label: string; detail: string };
+
+interface SWOTQuadrantProps {
+  title: string;
+  icon: LucideIcon;
+  color: string;
+  items: SwotItem[];
+  emptyMessage: string;
+}
+
+function SWOTQuadrant({ title, icon: Icon, color, items, emptyMessage }: SWOTQuadrantProps) {
+  return (
+    <div className="bg-white rounded-2xl shadow-sm overflow-hidden" style={{ border: '1px solid #648C9C33' }}>
+      {/* Quadrant header */}
+      <div className="px-5 py-4 flex items-center gap-3" style={{ backgroundColor: `${color}18` }}>
+        <div
+          className="w-8 h-8 rounded-lg flex items-center justify-center shrink-0"
+          style={{ backgroundColor: `${color}28` }}
+        >
+          <Icon className="w-4 h-4" style={{ color }} />
+        </div>
+        <h3 className="font-semibold text-base" style={{ color: '#023155' }}>{title}</h3>
+        <span
+          className="ml-auto text-xs px-2 py-0.5 rounded-full font-semibold"
+          style={{ backgroundColor: `${color}28`, color }}
+        >
+          {items.length}
+        </span>
+      </div>
+
+      {/* Quadrant body */}
+      <div className="p-5">
+        {items.length === 0 ? (
+          <p className="text-sm italic" style={{ color: '#648C9C' }}>{emptyMessage}</p>
+        ) : (
+          <ul className="space-y-3">
+            {items.map((item, i) => (
+              <li key={i} className="flex gap-3">
+                <div
+                  className="mt-1.5 w-2 h-2 rounded-full shrink-0"
+                  style={{ backgroundColor: color }}
+                />
+                <div>
+                  <p className="text-sm font-medium leading-snug" style={{ color: '#023155' }}>
+                    {item.label}
+                  </p>
+                  <p className="text-xs mt-0.5 leading-relaxed" style={{ color: '#443646' }}>
+                    {item.detail}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function SWOTSection({ result }: { result: NonNullable<ReturnType<typeof useValidation>['result']> }) {
+  const scoringReport = result.scoring_report;
+  const opportunitySignals: OpportunitySignal[] = scoringReport?.opportunity_signals ?? [];
+  const riskFactors: RiskFactor[] = scoringReport?.risk_factors ?? [];
+
+  // Map to SWOT quadrants
+  const strengths: SwotItem[] = opportunitySignals
+    .filter(s => s.strength === 'Strong')
+    .map(s => ({ label: s.signal, detail: s.detail }));
+
+  const weaknesses: SwotItem[] = riskFactors
+    .filter(r => r.severity === 'High')
+    .map(r => ({ label: r.factor, detail: r.detail }));
+
+  const opportunities: SwotItem[] = opportunitySignals
+    .filter(s => s.strength !== 'Strong')
+    .map(s => ({ label: s.signal, detail: s.detail }));
+
+  const threats: SwotItem[] = riskFactors
+    .filter(r => r.severity !== 'High')
+    .map(r => ({ label: r.factor, detail: r.detail }));
+
+  // Fallback items derived from top-level fields when scoring_report is absent
+  if (!scoringReport) {
+    const compScore = result.competition_score ?? 0;
+    const mktScore = result.market_score ?? 0;
+    if (compScore <= 3)
+      strengths.push({ label: 'Low Competition', detail: 'Few direct competitors detected in the market.' });
+    if (mktScore >= 7)
+      strengths.push({ label: 'Strong Market Score', detail: `Market score of ${mktScore}/10 signals significant demand.` });
+    if (result.unicorn_potential?.toLowerCase().includes('high'))
+      opportunities.push({ label: 'Unicorn Potential', detail: result.unicorn_potential ?? '' });
+    if (result.trend_assessment && !result.trend_assessment.toLowerCase().includes('cool'))
+      opportunities.push({ label: 'Market Traction', detail: result.trend_assessment });
+    if (compScore >= 7)
+      threats.push({ label: 'High Competition', detail: `Competition score of ${compScore}/10 indicates a crowded market.` });
+    if ((result.risk_level ?? '').toLowerCase() === 'high')
+      weaknesses.push({ label: 'High Risk Level', detail: 'Overall risk is rated High based on current market signals.' });
+  }
+
+  return (
+    <div className="mb-8">
+      <h2 className="text-xl mb-4" style={{ color: '#023155' }}>SWOT Analysis</h2>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <SWOTQuadrant
+          title="Strengths"
+          icon={ThumbsUp}
+          color="#648C9C"
+          items={strengths}
+          emptyMessage="No major strengths identified based on available data."
+        />
+        <SWOTQuadrant
+          title="Weaknesses"
+          icon={ThumbsDown}
+          color="#AE0E31"
+          items={weaknesses}
+          emptyMessage="No critical weaknesses detected."
+        />
+        <SWOTQuadrant
+          title="Opportunities"
+          icon={Lightbulb}
+          color="#0489A7"
+          items={opportunities}
+          emptyMessage="No specific opportunities identified."
+        />
+        <SWOTQuadrant
+          title="Threats"
+          icon={Flame}
+          color="#F5A406"
+          items={threats}
+          emptyMessage="No significant threats detected."
+        />
       </div>
     </div>
   );
