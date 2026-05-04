@@ -60,10 +60,7 @@ RISK_MEDIUM_THRESHOLD = 40
 # ─── Preprocessing ───────────────────────────────────────────────────────────
 
 def _preprocess_startups(startups: list[dict]) -> list[dict]:
-    """
-    Normalize and sanitize the raw startup list.
-    Handles both legacy and enriched data formats.
-    """
+    
     cleaned = []
     for s in startups:
         status = str(s.get("status", "unknown")).strip().lower()
@@ -106,9 +103,7 @@ def _preprocess_startups(startups: list[dict]) -> list[dict]:
 # ─── Core Metrics ─────────────────────────────────────────────────────────────
 
 def _compute_metrics(startups: list[dict]) -> dict:
-    """
-    Compute all core evaluation metrics from the preprocessed startup list.
-    """
+    
     total = len(startups)
     active_count = sum(1 for s in startups if s["status"] in ACTIVE_STATUSES)
     failed_count = sum(1 for s in startups if s["status"] in FAILED_STATUSES)
@@ -189,14 +184,7 @@ def compute_trend_score(keywords: list[str], trend_data: list[dict] = None) -> f
 # ─── Macro Context ────────────────────────────────────────────────────────────
 
 def apply_macro_adjustment(score: float, macro_context: dict = None) -> tuple[float, str]:
-    """
-    Apply a small macro-economic adjustment to the score.
-
-    High interest rates → slightly more risk (harder to raise funding)
-    High CPI → slightly more risk (higher costs)
-
-    Returns (adjusted_score, reasoning_text).
-    """
+   
     if not macro_context:
         return score, ""
 
@@ -264,7 +252,7 @@ def _classify_risk(score: float) -> str:
 # ─── Insights ─────────────────────────────────────────────────────────────────
 
 def _generate_insights(metrics: dict, trend_score: float = 0.0, macro_context: dict = None) -> dict:
-    """Derive qualitative insights from computed metrics."""
+    
     comp_norm = metrics["competition_normalized"]
     if comp_norm >= 0.7:
         competition_level = "High"
@@ -490,7 +478,7 @@ def _derive_opportunity_signals(metrics: dict, trend_score: float = 0.0) -> list
     return signals
 
 
-# ─── Gemini AI-Powered Insight Generation ────────────────────────────────────
+# ─── AI-Powered Insight Generation ────────────────────────────────────
 
 
 def generate_ai_insights(
